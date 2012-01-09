@@ -64,8 +64,6 @@ struct pmc_device {
   const struct pmc_access_policy *d_access_policy;
 };
 
-static const struct pmc_access_policy PMC_ACCESS_POLICY_NONE;
-
 static unsigned int pmc_major;
 static struct class *pmc_class;
 static DEFINE_PER_CPU(struct pmc_device *, pmc_device_vec);
@@ -272,35 +270,39 @@ static struct file_operations pmc_file_operations = {
   .release = &pmc_release,
 };
 
-#define PMC_ACCESS_POLICY(ents...) \
-  ((static const struct pmc_access_policy) {				\
-    .ae_entries = { ##ents },						\
-      .ae_nr_entries = sizeof((struct pmc_access_policy_entry []) { ##ents }) / \
-	 sizeof(((struct pmc_access_policy_entry []) { ##ents })[0])	\
-	 })
-
 static const struct pmc_access_policy *pmc_access_policy_lookup(int cpu)
 {
-  const struct pmc_access_policy *ap = &pmc_access_policy_none;
+  static const struct pmc_access_policy none;
+  static const struct pmc_access_policy_entry opteron_entries[] = {
+      { .ae_begin = 0xC0010000, .ae_end = 0xC0010004, .ae_wr_mask = 0xFFFFFCF000380000 },
+      { .ae_begin = 0xC0010004, .ae_end = 0xC0010008 }
+  };
+  static const struct pmc_access_policy opteron = {
+    .ap_entries = opteron_entries,
+    .ap_nr_entries = sizeof(opteron_entries) / sizeof(opteron_entries[0]),
+  };
+  const struct pmc_access_policy *ap = &none;
   struct cpuinfo_x86 *x;
 
   if (cpu >= NR_CPUS || !cpu_online(cpu))
-    return ap;
+    goto out;
 
   x = &(cpu_data)[cpu];
   if (!cpu_has(x, X86_FEATURE_MSR))
-    return ap; /* MSR not supported. */
+    goto out; /* MSR not supported. */
 
   if (x->x86_vendor == X86_VENDOR_AMD) {
     if (x->x86 == 0x10)
-      /* Opteron. */
-      return &PMC_ACCESS_POLICY(
-	  { .ae_begin = 0xC0010000, ae_end = 0xC0010004, .ae_wr_mask = 0xFFFFFCF000380000 },
-	  { .ae_begin = 0xC0010004, ae_end = 0xC0010008 });
+      return &opteron;
 
   } else if (x->x86_vendor == X86_VENDOR_INTEL) {
+    /* ... */
   }
 
+ out:
+  if (ap == &none)
+    printk(KERN_WARNING"%s: no access policy found for cpu %d\n", MODULE_NAME, cpu);
+    
   return ap;
 }
 
@@ -316,7 +318,7 @@ static int pmc_device_create(struct class *class, int major, int cpu)
 
   cdev_init(&pd->d_cdev, &pmc_file_operations);
   pd->d_cdev.owner = THIS_MODULE;
-  ps->d_access_policy = pmc_device_access_policy_lookup(cpu);
+  pd->d_access_policy = pmc_access_policy_lookup(cpu);
 
   err = cdev_add(&pd->d_cdev, MKDEV(major, cpu), 1);
   if (err) {
