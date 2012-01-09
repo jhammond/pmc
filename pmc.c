@@ -28,6 +28,8 @@
 #include <asm/system.h>
 
 #define PMC_MAJOR 0
+#define PMC_DEVICE_NAME "pmc"
+
 typedef u32 msr_t;
 typedef u64 val_t;
 #define NR_VALS_PER_BUF (PAGE_SIZE / sizeof(val_t))
@@ -35,6 +37,7 @@ typedef u64 val_t;
 /* XXX Entries must be sorted. */
 /* TODO Quiet mode, automatically clear bad bits. */
 
+static unsigned int pmc_major;
 static struct class *pmc_class;
 
 static inline int
@@ -82,6 +85,8 @@ struct pmc_dev {
   struct cdev pd_cdev;
   struct pmc_access_policy *pd_access_policy;
 };
+
+static struct pmc_access_policy PMC_ACCESS_POLICY_NONE;
 
 static void enable_cr4_pce_func(void *ignored)
 {
@@ -158,7 +163,7 @@ static loff_t pmc_llseek(struct file *file, loff_t offset, int whence)
 }
 
 static ssize_t
-pmc_transfer(struct file *file, int dir, char __user *buf, size_t count, loff_t *pos)
+pmc_rw(struct file *file, int dir, char __user *buf, size_t count, loff_t *pos)
 {
   struct inode *inode = file->f_dentry->d_inode;
   int cpu = iminor(inode);
@@ -217,13 +222,13 @@ pmc_transfer(struct file *file, int dir, char __user *buf, size_t count, loff_t 
 static ssize_t
 pmc_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
-  return rpm_transfer(file, READ, buf, count, pos);
+  return rpm_rw(file, READ, buf, count, pos);
 }
 
 static ssize_t
 pmc_write(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
-  return rpm_transfer(file, WRITE, (char __user *) buf, count, pos);
+  return rpm_rw(file, WRITE, (char __user *) buf, count, pos);
 }
 
 static int pmc_open(struct inode *inode, struct file *file)
@@ -247,12 +252,11 @@ static int pmc_open(struct inode *inode, struct file *file)
 
   file->private_data = val_buf;
 
+  /* TODO Free val_buf in release(). */
+
   return 0;
 }
 
-/*
- * File operations we support
- */
 static cstruct file_operations pmc_fops = {
   .owner = THIS_MODULE,
   .llseek = pmc_llseek,
@@ -261,19 +265,40 @@ static cstruct file_operations pmc_fops = {
   .open = pmc_open,
 };
 
-static int pmc_class_device_create(int cpu)
+static int pmc_device_create(struct class *class, int major, int cpu)
 {
-  int err = 0;
-  struct class_device *dev;
+  struct pmc_device *pd;
+  int err;
+  struct device *dev;
 
-  dev = class_device_create(pmc_class, NULL, MKDEV(PMC_MAJOR, cpu), NULL, "pmc%d", cpu);
-  if (IS_ERR(dev))
+  pd = kzalloc(sizeof(*pd), GFP_KERNEL);
+  if (pd == NULL)
+    return -ENOMEM;
+
+  cdev_init(&pd->pd_cdev, &pmc_fops);
+  pd->pd_cdev.owner = THIS_MODULE;
+  pd->pd_access_policy = &PMC_ACCESS_POLICY_NONE;
+
+  err = cdev_add(&pd->pd_cdev, MKDEV(major, cpu));
+  if (err) {
+    /* XXX kfree(pd); */
+    return err;
+  }
+
+  dev = device_create(class, NULL, MKDEV(major, cpu), NULL,
+                      PMC_DEVICE_NAME"%d", cpu);
+  if (IS_ERR(DEV)) {
     err = PTR_ERR(dev);
+    cdev_del(&pd->pd_cdev);
+    /* XXX kfree(). */
+    return err;
+  }
 
-  return err;
+  return 0;
 }
 
-#ifdef CONFIG_HOTPLUG_CPU
+#undef PMC_HOTPLUG_CPU /* CONFIG_HOTPLUG_CPU */
+#ifdef PMC_HOTPLUG_CPU
 static int pmc_class_cpu_callback(struct notifier_block *nb,
                                   unsigned long action, void *data)
 {
@@ -297,57 +322,63 @@ static struct notifier_block __cpuinitdata pmc_class_cpu_notifier =
 };
 #endif
 
+static void pmc_cleanup(void)
+{
+  int cpu;
+
+#ifdef PMC_HOTPLUG_CPU
+  unregister_hotcpu_notifier(&pmc_class_cpu_notifier);
+#endif
+
+  for_each_online_cpu(cpu)
+    /* XXX */;
+
+  if (pmc_class != NULL)
+    class_destroy(pmc_class);
+
+  if (pmc_major != 0)
+    unregister_chrdev_region(MKDEV(pmc_major, 0), num_possible_cpus());
+}
+
 static int __init pmc_init(void)
 {
-  int cpu, err;
+  int err, cpu, nr_cpus = num_possible_cpus();
+  dev_t dev;
 
-  if (register_chrdev(PMC_MAJOR, "cpu/pmc", &pmc_fops)) {
-    printk(KERN_ERR "pmc: unable to get major %d for pmc\n",
-           PMC_MAJOR);
-    err = -EBUSY;
-    goto out;
+  err = alloc_chrdev_region(&dev, 0, nr_cpus, PMC_DEVICE_NAME);
+  if (err < 0) {
+    printk(KERN_WARNING, "%s: cannot allocate char device region\: %d\n", err);
+    goto fail;
   }
 
-  pmc_class = class_create(THIS_MODULE, "pmc");
+  pmc_major = MAJOR(dev);
+
+  pmc_class = class_create(THIS_MODULE, PMC_DEVICE_NAME);
   if (IS_ERR(pmc_class)) {
     err = PTR_ERR(pmc_class);
-    goto out_chrdev;
+    goto fail;
   }
 
   for_each_online_cpu(cpu) {
-    err = pmc_class_device_create(cpu);
+    err = pmc_device_create(pmc_class, pmc_major, cpu);
     if (err != 0)
-      goto out_class;
+      goto fail;
   }
 
+#ifdef PMC_HOTPLUG_CPU
   register_hotcpu_notifier(&pmc_class_cpu_notifier);
+#endif
 
-  err = 0;
-  goto out;
+  return 0;
 
- out_class:
-  for_each_online_cpu(cpu)
-    class_device_destroy(pmc_class, MKDEV(PMC_MAJOR, cpu));
-
-  class_destroy(pmc_class);
-
- out_chrdev:
-  unregister_chrdev(PMC_MAJOR, "cpu/pmc");
-
- out:
+ fail:
+  pmc_cleanup();
   return err;
 }
 
 static void __exit pmc_exit(void)
 {
-  int cpu;
-
-  for_each_online_cpu(cpu)
-    class_device_destroy(pmc_class, MKDEV(PMC_MAJOR, cpu));
-
-  class_destroy(pmc_class);
-  unregister_chrdev(PMC_MAJOR, "cpu/msr");
-  unregister_hotcpu_notifier(&pmc_class_cpu_notifier);
+  pmc_cleanup();
 }
 
 module_init(pmc_init);
