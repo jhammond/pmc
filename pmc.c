@@ -14,14 +14,16 @@
 #include <linux/errno.h>
 #include <linux/fcntl.h>
 #include <linux/init.h>
-#include <linux/poll.h>
+/* #include <linux/poll.h> */
+#include <linux/fs.h>
+#include <linux/cdev.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
 #include <linux/major.h>
-#include <linux/fs.h>
 #include <linux/device.h>
 #include <linux/cpu.h>
 #include <linux/notifier.h>
+#include <linux/list.h>
 #include <asm/processor.h>
 #include <asm/msr.h>
 #include <asm/uaccess.h>
@@ -29,6 +31,7 @@
 
 #define PMC_MAJOR 0
 #define PMC_DEVICE_NAME "pmc"
+#define MODULE_NAME "pmc"
 
 typedef u32 msr_t;
 typedef u64 val_t;
@@ -37,8 +40,42 @@ typedef u64 val_t;
 /* XXX Entries must be sorted. */
 /* TODO Quiet mode, automatically clear bad bits. */
 
+struct pmc_access_policy_entry {
+  msr_t ae_begin, ae_end;
+  val_t ae_wr_mask;
+};
+
+struct pmc_access_policy {
+  const struct pmc_access_policy_entry *ap_entries;
+  size_t ap_nr_entries;
+};
+
+struct pmc_cmd_info {
+  const struct pmc_access_policy *ci_access_policy;
+  int ci_dir;
+  msr_t ci_reg;
+  val_t *ci_val_buf;
+  size_t ci_nr_vals;
+  ssize_t ci_rc;
+};
+
+struct pmc_device {
+  struct cdev d_cdev;
+  const struct pmc_access_policy *d_access_policy;
+};
+
+static const struct pmc_access_policy PMC_ACCESS_POLICY_NONE;
+
 static unsigned int pmc_major;
 static struct class *pmc_class;
+static DEFINE_PER_CPU(struct pmc_device *, pmc_device_vec);
+
+static void enable_cr4_pce(void)
+{
+  unsigned long cr4 = read_cr4();
+  cr4 |= X86_CR4_PCE;
+  write_cr4(cr4);
+}
 
 static inline int
 rw_msr_safe(int dir, msr_t reg, val_t *val)
@@ -47,7 +84,7 @@ rw_msr_safe(int dir, msr_t reg, val_t *val)
   u32 lo, hi;
 
   if (dir == READ) {
-    err = rdmsr_safe(reg, lo, hi);
+    err = rdmsr_safe(reg, &lo, &hi);
     if (!err)
       *val = lo | ((u64) hi << 32);
   } else {
@@ -62,39 +99,6 @@ rw_msr_safe(int dir, msr_t reg, val_t *val)
   return err;
 }
 
-struct pmc_access_policy_entry {
-  msr_t ae_begin, ae_end;
-  val_t ae_wr_mask;
-};
-
-struct pmc_access_policy {
-  struct pmc_access_policy_entry *ap_entries;
-  size_t ap_nr_entries;
-};
-
-struct pmc_cmd_info {
-  const struct pmc_access_policy *ci_access_policy;
-  int ci_dir;
-  msr_t ci_reg;
-  val_t *ci_val_buf;
-  size_t ci_nr_vals;
-  ssize_t ci_rc;
-};
-
-struct pmc_dev {
-  struct cdev pd_cdev;
-  struct pmc_access_policy *pd_access_policy;
-};
-
-static struct pmc_access_policy PMC_ACCESS_POLICY_NONE;
-
-static void enable_cr4_pce_func(void *ignored)
-{
-  unsigned long cr4 = read_cr4();
-  cr4 |= X86_CR4_PCE;
-  write_cr4(cr4);
-}
-
 static void pmc_cmd_func(void *info)
 {
   struct pmc_cmd_info *ci = info;
@@ -104,6 +108,8 @@ static void pmc_cmd_func(void *info)
   size_t nr_vals = ci->ci_nr_vals;
   ssize_t nr = 0, err = 0;
   size_t i = 0;
+
+  enable_cr4_pce();
 
   while (nr < nr_vals && i < ap->ap_nr_entries) {
     const struct pmc_access_policy_entry *ae = &ap->ap_entries[i];
@@ -167,7 +173,7 @@ pmc_rw(struct file *file, int dir, char __user *buf, size_t count, loff_t *pos)
 {
   struct inode *inode = file->f_dentry->d_inode;
   int cpu = iminor(inode);
-  struct pmc_dev *dev = container_of(inode->i_cdev, struct pmc_dev, pd_cdev);
+  struct pmc_device *pd = container_of(inode->i_cdev, struct pmc_device, d_cdev);
   val_t *val_buf = file->private_data;
   size_t nr_vals_requested = count / sizeof(val_t);
   size_t nr_vals_done = 0;
@@ -180,11 +186,11 @@ pmc_rw(struct file *file, int dir, char __user *buf, size_t count, loff_t *pos)
 
   while (nr_vals_done < nr_vals_requested) {
     struct pmc_cmd_info ci = {
-      .ci_access_policy = dev->pd_access_policy,
+      .ci_access_policy = pd->d_access_policy,
       .ci_dir = dir,
       .ci_reg = *pos / sizeof(val_t),
       .ci_val_buf = val_buf,
-      .ci_nr_vals = MIN(nr_vals_requested - nr_vals_done, NR_VALS_PER_BUF),
+      .ci_nr_vals = min_t(size_t, nr_vals_requested - nr_vals_done, NR_VALS_PER_BUF),
     };
 
     if (dir == WRITE &&
@@ -222,29 +228,25 @@ pmc_rw(struct file *file, int dir, char __user *buf, size_t count, loff_t *pos)
 static ssize_t
 pmc_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
-  return rpm_rw(file, READ, buf, count, pos);
+  return pmc_rw(file, READ, buf, count, pos);
 }
 
 static ssize_t
-pmc_write(struct file *file, char __user *buf, size_t count, loff_t *pos)
+pmc_write(struct file *file, const char __user *buf, size_t count, loff_t *pos)
 {
-  return rpm_rw(file, WRITE, (char __user *) buf, count, pos);
+  return pmc_rw(file, WRITE, (char __user *) buf, count, pos);
 }
 
 static int pmc_open(struct inode *inode, struct file *file)
 {
   unsigned int cpu = iminor(file->f_dentry->d_inode);
-  struct cpuinfo_x86 *info;
   val_t *val_buf = NULL;
 
-  /* TODO cr4. */
-
   if (cpu >= NR_CPUS || !cpu_online(cpu))
-    return -ENXIO;	/* No such CPU */
+    return -ENXIO; /* No such CPU. */
 
-  info = &(cpu_data)[cpu];
-  if (!cpu_has(info, X86_FEATURE_MSR))
-    return -EIO;	/* MSR not supported */
+  if (per_cpu(pmc_device_vec, cpu) == NULL)
+    return -ENXIO;
 
   val_buf = kmalloc(NR_VALS_PER_BUF * sizeof(val_t), GFP_KERNEL);
   if (val_buf == NULL)
@@ -252,18 +254,55 @@ static int pmc_open(struct inode *inode, struct file *file)
 
   file->private_data = val_buf;
 
-  /* TODO Free val_buf in release(). */
-
   return 0;
 }
 
-static cstruct file_operations pmc_fops = {
+static int pmc_release(struct inode *inode, struct file *file)
+{
+  kfree(file->private_data);
+  return 0;
+}
+
+static struct file_operations pmc_file_operations = {
   .owner = THIS_MODULE,
-  .llseek = pmc_llseek,
-  .read = pmc_read,
-  .write = pmc_write,
-  .open = pmc_open,
+  .llseek = &pmc_llseek,
+  .read = &pmc_read,
+  .write = &pmc_write,
+  .open = &pmc_open,
+  .release = &pmc_release,
 };
+
+#define PMC_ACCESS_POLICY(ents...) \
+  ((static const struct pmc_access_policy) {				\
+    .ae_entries = { ##ents },						\
+      .ae_nr_entries = sizeof((struct pmc_access_policy_entry []) { ##ents }) / \
+	 sizeof(((struct pmc_access_policy_entry []) { ##ents })[0])	\
+	 })
+
+static const struct pmc_access_policy *pmc_access_policy_lookup(int cpu)
+{
+  const struct pmc_access_policy *ap = &pmc_access_policy_none;
+  struct cpuinfo_x86 *x;
+
+  if (cpu >= NR_CPUS || !cpu_online(cpu))
+    return ap;
+
+  x = &(cpu_data)[cpu];
+  if (!cpu_has(x, X86_FEATURE_MSR))
+    return ap; /* MSR not supported. */
+
+  if (x->x86_vendor == X86_VENDOR_AMD) {
+    if (x->x86 == 0x10)
+      /* Opteron. */
+      return &PMC_ACCESS_POLICY(
+	  { .ae_begin = 0xC0010000, ae_end = 0xC0010004, .ae_wr_mask = 0xFFFFFCF000380000 },
+	  { .ae_begin = 0xC0010004, ae_end = 0xC0010008 });
+
+  } else if (x->x86_vendor == X86_VENDOR_INTEL) {
+  }
+
+  return ap;
+}
 
 static int pmc_device_create(struct class *class, int major, int cpu)
 {
@@ -275,30 +314,45 @@ static int pmc_device_create(struct class *class, int major, int cpu)
   if (pd == NULL)
     return -ENOMEM;
 
-  cdev_init(&pd->pd_cdev, &pmc_fops);
-  pd->pd_cdev.owner = THIS_MODULE;
-  pd->pd_access_policy = &PMC_ACCESS_POLICY_NONE;
+  cdev_init(&pd->d_cdev, &pmc_file_operations);
+  pd->d_cdev.owner = THIS_MODULE;
+  ps->d_access_policy = pmc_device_access_policy_lookup(cpu);
 
-  err = cdev_add(&pd->pd_cdev, MKDEV(major, cpu));
+  err = cdev_add(&pd->d_cdev, MKDEV(major, cpu), 1);
   if (err) {
-    /* XXX kfree(pd); */
+    kfree(pd);
     return err;
   }
 
-  dev = device_create(class, NULL, MKDEV(major, cpu), NULL,
-                      PMC_DEVICE_NAME"%d", cpu);
-  if (IS_ERR(DEV)) {
+  dev = device_create(class, NULL /* no parent */,
+		      MKDEV(major, cpu), "%s%d", PMC_DEVICE_NAME, cpu);
+  if (IS_ERR(dev)) {
     err = PTR_ERR(dev);
-    cdev_del(&pd->pd_cdev);
-    /* XXX kfree(). */
+    cdev_del(&pd->d_cdev);
+    kfree(pd);
     return err;
   }
+
+  per_cpu(pmc_device_vec, cpu) = pd;
 
   return 0;
 }
 
-#undef PMC_HOTPLUG_CPU /* CONFIG_HOTPLUG_CPU */
-#ifdef PMC_HOTPLUG_CPU
+void pmc_device_destroy(struct class *class, int major, int cpu)
+{
+  struct pmc_device *pd = per_cpu(pmc_device_vec, cpu);
+
+  if (pd == NULL)
+    return;
+
+  device_destroy(class, pd->d_cdev.dev);
+  cdev_del(&pd->d_cdev);
+  kfree(pd);
+
+  per_cpu(pmc_device_vec, cpu) = NULL;
+}
+
+#ifdef CONFIG_HOTPLUG_CPU
 static int pmc_class_cpu_callback(struct notifier_block *nb,
                                   unsigned long action, void *data)
 {
@@ -306,10 +360,10 @@ static int pmc_class_cpu_callback(struct notifier_block *nb,
 
   switch (action) {
   case CPU_ONLINE:
-    pmc_class_device_create(cpu);
+    pmc_device_create(pmc_class, pmc_major, cpu);
     break;
   case CPU_DEAD:
-    class_device_destroy(pmc_class, MKDEV(PMC_MAJOR, cpu));
+    pmc_device_destroy(pmc_class, pmc_major, cpu);
     break;
   }
 
@@ -326,12 +380,11 @@ static void pmc_cleanup(void)
 {
   int cpu;
 
-#ifdef PMC_HOTPLUG_CPU
   unregister_hotcpu_notifier(&pmc_class_cpu_notifier);
-#endif
 
-  for_each_online_cpu(cpu)
-    /* XXX */;
+  if (pmc_major != 0 && pmc_class != NULL)
+    for_each_online_cpu(cpu)
+      pmc_device_destroy(pmc_class, pmc_major, cpu);
 
   if (pmc_class != NULL)
     class_destroy(pmc_class);
@@ -347,7 +400,8 @@ static int __init pmc_init(void)
 
   err = alloc_chrdev_region(&dev, 0, nr_cpus, PMC_DEVICE_NAME);
   if (err < 0) {
-    printk(KERN_WARNING, "%s: cannot allocate char device region\: %d\n", err);
+    printk(KERN_ERR "%s: cannot allocate char device region: %d\n",
+	   MODULE_NAME, err);
     goto fail;
   }
 
@@ -355,6 +409,8 @@ static int __init pmc_init(void)
 
   pmc_class = class_create(THIS_MODULE, PMC_DEVICE_NAME);
   if (IS_ERR(pmc_class)) {
+    printk(KERN_ERR "%s: cannot create device class: %d\n",
+	   MODULE_NAME, err);
     err = PTR_ERR(pmc_class);
     goto fail;
   }
@@ -365,9 +421,7 @@ static int __init pmc_init(void)
       goto fail;
   }
 
-#ifdef PMC_HOTPLUG_CPU
   register_hotcpu_notifier(&pmc_class_cpu_notifier);
-#endif
 
   return 0;
 
