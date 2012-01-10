@@ -31,7 +31,7 @@
 #endif
 
 typedef uint32_t msr_t;
-typedef uint64_t val_t; 
+typedef uint64_t val_t;
 
 #define PRI_MSR "0x%08X"
 
@@ -51,7 +51,7 @@ static int lastcpu(void) /* Don't have sched_getcpu(). */
 	     "%*d %*d %*d %*d %*d %*d %*d %*d %*d %*d "
 	     "%*d %*d %*d %*d %*d %*d %*d %*d %*d %*d "
 	     "%*d %*d %*d %*d %*d %*d %*d %*d %*d %*d "
-	     "%*d %*d %*d %*d %*d %*d %d", &cpu) != 1)
+	     "%*d %*d %*d %*d %*d %d", &cpu) != 1)
     cpu = -1;
 
  out:
@@ -96,7 +96,7 @@ int parse_msr(msr_t *msr, const char *str, char **end)
     key = strndup(str, *end - str);
     TRACE("key `%s'\n", key);
 
-    mte = bsearch(key, msr_table, sizeof(msr_table) / sizeof(msr_table[0]), 
+    mte = bsearch(key, msr_table, sizeof(msr_table) / sizeof(msr_table[0]),
 		  sizeof(msr_table[0]), &msr_search_cmp);
     free(key);
 
@@ -121,7 +121,6 @@ void print_msr_table(void)
   for (i = 0; i < nr_msrs; i++)
     printf("%-32s "PRI_MSR"\n", msr_table[i].m_name, msr_table[i].m_msr);
 }
-
 
 int read_msr_range(int fd, msr_t msr0, msr_t msr1)
 {
@@ -315,7 +314,7 @@ void usage(int status)
 	  " Read PMC 0 through 3 on Intel: `rwmsr r 0xC1..0xC4'\n"
 	  " Equivalently: `rwmsr r IA32_PMC0..IA32_PMC3'\n"
 	  " Write 0xF03 to AMD PERF_CTL0: `rwmsr w AMD_PERF_CTL0:0xF03'\n"
-	  " Clear first 2 counters on Opteron: `rwmsr w AMD_PERF_CTR0,AMD_PERF_CTR1:0'\n"
+	  " Clear first 2 counters on Opteron: `rwmsr w amd_perf_ctr0,amd_perf_ctr11:0'\n"
 	  ,
 	  program_invocation_short_name);
   exit(status);
