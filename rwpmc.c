@@ -132,10 +132,12 @@ int read_msr_range(int fd, msr_t msr0, msr_t msr1)
   if (rc < 0) {
     ERROR("error reading MSR range "PRI_MSR" to "PRI_MSR": %m\n",
 	  msr0, msr1);
+    goto out;
   } else if (rc < nr_vals * sizeof(val_t)) {
     ERROR("short read on MSR range "PRI_MSR" to "PRI_MSR", rc %zd\n",
 	  msr0, msr1, rc);
     rc = -1;
+    goto out;
   } else {
     TRACE("read "PRI_MSR" to "PRI_MSR": Success\n", msr0, msr1);
   }
@@ -151,6 +153,7 @@ int read_msr_range(int fd, msr_t msr0, msr_t msr1)
     }
   }
 
+ out:
   free(val_buf);
 
   return rc;
