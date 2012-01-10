@@ -10,6 +10,7 @@
 #include <getopt.h>
 #include <sys/mman.h>
 #include <sys/types.h>
+#include "msrs.h"
 
 #define READ 0
 #define WRITE 1
@@ -28,6 +29,11 @@
 #else
 #define TRACE(fmt, args...) ((void) 0)
 #endif
+
+typedef uint32_t msr_t;
+typedef uint64_t val_t; 
+
+#define PRI_MSR "0x%08X"
 
 static int lastcpu(void) /* Don't have sched_getcpu(). */
 {
@@ -60,11 +66,53 @@ static int lastcpu(void) /* Don't have sched_getcpu(). */
   return cpu;
 }
 
-typedef uint32_t msr_t;
-typedef uint64_t val_t; 
-
 int raw_output = 0;
 int base = 0;
+
+const struct msr_table_ent {
+  const char *m_name;
+  msr_t m_msr;
+} msr_table[] = {
+#include "msr_table.def"
+};
+
+int msr_search_cmp(const void *v_key, const void *v_ent)
+{
+  const char *key = v_key;
+  const struct msr_table_ent *ent = v_ent;
+  return strcasecmp(key, ent->m_name);
+}
+
+int parse_msr(msr_t *msr, const char *str, char **end)
+{
+  if (isalpha(*str)) {
+    char *key;
+    struct msr_table_ent *mte;
+
+    *end = (char *) str;
+    while (isalnum(**end) || **end == '_')
+      (*end)++;
+
+    key = strndup(str, *end - str);
+    TRACE("key `%s'\n", key);
+
+    mte = bsearch(key, msr_table, sizeof(msr_table) / sizeof(msr_table[0]), 
+		  sizeof(msr_table[0]), &msr_search_cmp);
+    free(key);
+
+    if (mte != NULL) {
+      *msr = mte->m_msr;
+      return 0;
+    }
+  }
+
+  errno = 0;
+  *msr = strtoul(str, end, base);
+  if (errno != 0 || *end == str)
+    return -1;
+
+  return 0;
+}
 
 int read_msr_range(int fd, msr_t msr0, msr_t msr1)
 {
@@ -82,14 +130,14 @@ int read_msr_range(int fd, msr_t msr0, msr_t msr1)
 
   rc = pread(fd, val_buf, nr_vals * sizeof(val_t), msr0 * sizeof(val_t));
   if (rc < 0) {
-    ERROR("error reading MSR range %#08x to %#08x: %m\n",
+    ERROR("error reading MSR range "PRI_MSR" to "PRI_MSR": %m\n",
 	  msr0, msr1);
   } else if (rc < nr_vals * sizeof(val_t)) {
-    ERROR("short read on MSR range %#08x to %#08x, rc %zd\n",
+    ERROR("short read on MSR range "PRI_MSR" to "PRI_MSR", rc %zd\n",
 	  msr0, msr1, rc);
     rc = -1;
   } else {
-    TRACE("read %#08x to %#08x: Success\n", msr0, msr1);
+    TRACE("read "PRI_MSR" to "PRI_MSR": Success\n", msr0, msr1);
   }
 
   if (raw_output) {
@@ -127,14 +175,15 @@ int write_msr_range(int fd, msr_t msr0, msr_t msr1, val_t val)
 
   rc = pwrite(fd, val_buf, nr_vals * sizeof(val_t), msr0 * sizeof(val_t));
   if (rc < 0) {
-    ERROR("error writing MSR range %#08x to %#08x: %m\n",
+    ERROR("error writing MSR range "PRI_MSR" to "PRI_MSR": %m\n",
 	  msr0, msr1);
   } else if (rc < nr_vals * sizeof(val_t)) {
-    ERROR("short write on MSR range %#08x to %#08x, rc %zd\n",
+    ERROR("short write on MSR range "PRI_MSR" to "PRI_MSR", rc %zd\n",
 	  msr0, msr1, rc);
     rc = -1;
   } else {
-    TRACE("write %#08x to %#08x, val %llx: Success\n", msr0, msr1, (unsigned long long) val);
+    TRACE("write "PRI_MSR" to "PRI_MSR", val 0x%016llx: Success\n",
+	  msr0, msr1, (unsigned long long) val);
   }
 
   free(val_buf);
@@ -142,24 +191,14 @@ int write_msr_range(int fd, msr_t msr0, msr_t msr1, val_t val)
   return rc;
 }
 
-int parse_msr(msr_t *msr, const char *str, char **end)
-{
-  errno = 0;
-  *msr = strtoul(str, end, base);
-  if (errno != 0 || *end == str)
-    return -1;
-
-  return 0;
-}
-
-int write_msr_spec(int fd, char *spec)
+int write_msr_spec(int fd, const char *spec)
 {
   int rc = 0;
-  char *dup, *str, *end, *val_str;
+  char *cpy, *str, *end, *val_str;
   msr_t msr0, msr1;
   val_t val;
 
-  dup = val_str = strdup(spec);
+  cpy = val_str = strdup(spec);
   str = strsep(&val_str, ":");
   if (str == NULL || val_str == NULL)
     goto err;
@@ -183,6 +222,7 @@ int write_msr_spec(int fd, char *spec)
       str = end + 2;
       if (parse_msr(&msr1, str, &end) < 0)
 	goto err;
+      msr1 += 1;
     } else {
       msr1 = msr0 + 1;
     }
@@ -199,17 +239,17 @@ int write_msr_spec(int fd, char *spec)
     rc = -1;
   }
 
-  free(dup);
+  free(cpy);
   return rc;
 }
 
-int read_msr_spec(int fd, char *spec)
+int read_msr_spec(int fd, const char *spec)
 {
   int rc = 0;
   char *str, *end;
   msr_t msr0, msr1;
 
-  str = spec;
+  str = strdup(spec);
 
   while (*str != 0) {
     while (*str == ',')
