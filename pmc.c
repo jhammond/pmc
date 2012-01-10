@@ -14,7 +14,6 @@
 #include <linux/errno.h>
 #include <linux/fcntl.h>
 #include <linux/init.h>
-/* #include <linux/poll.h> */
 #include <linux/fs.h>
 #include <linux/cdev.h>
 #include <linux/smp.h>
@@ -37,7 +36,6 @@ typedef u32 msr_t;
 typedef u64 val_t;
 #define NR_VALS_PER_BUF (PAGE_SIZE / sizeof(val_t))
 
-/* XXX Entries must be sorted. */
 /* TODO Quiet mode, automatically clear bad bits. */
 
 struct pmc_access_policy_entry {
@@ -107,7 +105,7 @@ static void pmc_cmd_func(void *info)
 
   enable_cr4_pce();
 
-  for (nr = 0; nr < nr_vals, nr++) {
+  for (nr = 0; nr < nr_vals; nr++) {
     err = rw_msr_safe(dir, reg + nr, &val_buf[nr]);
     if (err)
       break;
@@ -155,9 +153,9 @@ static int pmc_access_policy_add(struct pmc_access_policy *ap,
     ae = rb_entry(*link, struct pmc_access_policy_entry, ae_node);
     parent = *link;
 
-    if (begin < ae->le_begin)
+    if (begin < ae->ae_begin)
       link = &((*link)->rb_left);
-    else if (begin > ae->le_begin)
+    else if (begin > ae->ae_begin)
       link = &((*link)->rb_right);
     else
       return -EINVAL; /* TODO Allow overwrite. */
@@ -170,7 +168,7 @@ static int pmc_access_policy_add(struct pmc_access_policy *ap,
 
   ae->ae_begin = begin;
   ae->ae_end = end;
-  ae->ae_mask = mask;
+  ae->ae_wr_mask = mask;
   rb_link_node(&ae->ae_node, parent, link);
   rb_insert_color(&ae->ae_node, &ap->ap_root);
 
@@ -211,7 +209,7 @@ static ssize_t pmc_access_chunkify(const struct pmc_access_policy *ap,
   if (lb == NULL)
     goto out;
 
-  node = lb->ae_node;
+  node = &lb->ae_node;
 
   while (reg < reg_end && node != NULL) {
     ae = container_of(node, const struct pmc_access_policy_entry, ae_node);
@@ -230,7 +228,7 @@ static ssize_t pmc_access_chunkify(const struct pmc_access_policy *ap,
       reg = brk;
     }
 
-    node = rb_next(node);
+    node = rb_next((struct rb_node *) node);
   }
 
  out:
@@ -260,7 +258,7 @@ pmc_rw(struct file *file, int dir, char __user *buf, size_t count, loff_t *pos)
       .ci_dir = dir,
       .ci_reg = *pos / sizeof(val_t),
       .ci_val_buf = val_buf,
-      .ci_nr_vals = min_t(size_t, nr_requested - nr_done, NR_VALS_PER_BUF);
+      .ci_nr_vals = min_t(size_t, nr_requested - nr_done, NR_VALS_PER_BUF),
     };
 
     if (dir == WRITE &&
@@ -348,10 +346,10 @@ static struct file_operations pmc_file_operations = {
 };
 
 struct smp_cpuid_info {
-  u32 reg, eax, ebx, ecx, exd;
+  u32 reg, eax, ebx, ecx, edx;
 };
 
-static void smp_cupid_func(void *info)
+static void smp_cpuid_func(void *info)
 {
   struct smp_cpuid_info *ci = info;
   cpuid(ci->reg, &ci->eax, &ci->ebx, &ci->ecx, &ci->edx);
@@ -360,7 +358,7 @@ static void smp_cupid_func(void *info)
 static inline int
 smp_cpuid(int cpu, int reg, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx)
 {
-  struct smp_cupid_info ci = { .reg = reg };
+  struct smp_cpuid_info ci = { .reg = reg };
   int err = smp_call_function_single(cpu, &smp_cpuid_func, &ci, 1, 1);
   if (err)
     return err;
