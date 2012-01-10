@@ -114,6 +114,15 @@ int parse_msr(msr_t *msr, const char *str, char **end)
   return 0;
 }
 
+void print_msr_table(void)
+{
+  size_t i, nr_msrs = sizeof(msr_table) / sizeof(msr_table[0]);
+
+  for (i = 0; i < nr_msrs; i++)
+    printf("%-32s "PRI_MSR"\n", msr_table[i].m_name, msr_table[i].m_msr);
+}
+
+
 int read_msr_range(int fd, msr_t msr0, msr_t msr1)
 {
   size_t nr_vals, i;
@@ -290,16 +299,24 @@ int read_msr_spec(int fd, const char *spec)
 void usage(int status)
 {
   fprintf(status == 0 ? stdout : stderr,
-	  "Usage: %s [OPTIONS]... DIR MSR[:VAL]...\n"
+	  "Usage: %s [OPTIONS]... DIR SPEC[:VAL]...\n"
 	  "Read and write performance MSR using /dev/pmcN.\n\n"
 	  " DIR one of [rRwW] to read or write memory\n"
-	  " MSR the MSR to access.\n"
-	  " VAL the value to write.\n\n"
-	  "OPTIONS: \n"
+	  " SPEC the MSR or list of MSRs to access.\n"
+	  " VAL the value to write.\n"
+	  "\nOPTIONS:\n"
 	  " -b, --base=NUM   use base-NUM for args, output\n"
 	  " -c, --cpu=CPU    access MSRs on CPU (default current)\n"
+	  " -h, --help       print this message and exit\n"
+	  " -l, --list       list MSR names to stdout\n"
 	  " -p, --path=PATH  use PATH instead on /dev/pmcN\n"
-	  " -r, --raw        write binary output\n",
+	  " -r, --raw        write binary output\n"
+	  "\nEXAMPLES:\n"
+	  " Read PMC 0 through 3 on Intel: `rwmsr r 0xC1..0xC4'\n"
+	  " Equivalently: `rwmsr r IA32_PMC0..IA32_PMC3'\n"
+	  " Write 0xF03 to AMD PERF_CTL0: `rwmsr w AMD_PERF_CTL0:0xF03'\n"
+	  " Clear first 2 counters on Opteron: `rwmsr w AMD_PERF_CTR0,AMD_PERF_CTR1:0'\n"
+	  ,
 	  program_invocation_short_name);
   exit(status);
 }
@@ -315,13 +332,14 @@ int main(int argc, char* argv[])
     { "base", 1, NULL, 'b' },
     { "cpu", 1, NULL, 'c' },
     { "help", 0, NULL, 'h' },
+    { "list", 0, NULL, 'l' },
     { "path", 1, NULL, 'p' },
     { "raw", 0, NULL, 'r' },
     { NULL,    0, NULL,  0  },
   };
 
   int c;
-  while ((c = getopt_long(argc, argv, "b:c:hp:r", opts, 0)) != -1) {
+  while ((c = getopt_long(argc, argv, "b:c:hlp:r", opts, 0)) != -1) {
     switch (c) {
     case 'b':
       base = atoi(optarg);
@@ -332,6 +350,9 @@ int main(int argc, char* argv[])
     case 'h':
       usage(0);
       break;
+    case 'l':
+      print_msr_table();
+      exit(0);
     case 'p':
       path = optarg;
       break;
