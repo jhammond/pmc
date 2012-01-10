@@ -175,80 +175,6 @@ static int pmc_access_policy_add(struct pmc_access_policy *ap,
   return 0;
 }
 
-static inline struct pmc_access_policy_entry *
-ae_next(const struct pmc_access_policy_entry *ae)
-{
-  struct rb_node *node = rb_next((struct rb_node *) &ae->ae_node);
-
-  return (node != NULL) ?
-    container_of(node, struct pmc_access_policy_entry, ae_node) :
-    NULL;
-}
-
-static ssize_t
-pmc_access_check(const struct pmc_access_policy *ap, struct pmc_cmd_info *ci)
-{
-  int dir = ci->ci_dir;
-  val_t *val_buf = ci->ci_val_buf;
-  size_t nr_vals = ci->ci_nr_vals;
-  ssize_t err = 0;
-
-  const struct rb_node *node = ap->ap_root.rb_node;
-  const struct pmc_access_policy_entry *lb = NULL, *ae;
-  msr_t reg_begin, reg_end, reg, brk;
-
-  if (nr_vals == 0)
-    return 0;
-
-  reg = reg_begin = ci->ci_reg;
-  reg_end = reg_begin + nr_vals;
-
-  while (node != NULL) {
-    ae = container_of(node, const struct pmc_access_policy_entry, ae_node);
-
-    if (ae->ae_begin <= reg_begin)
-      lb = ae;
-
-    if (ae->ae_begin < reg_begin)
-      node = node->rb_right;
-    else if (ae->ae_begin > reg_begin)
-      node = node->rb_left;
-    else
-      break;
-  }
-
-  for (ae = lb; reg < reg_end && ae != NULL; ae = ae_next(ae)) {
-    if (reg < ae->ae_begin)
-      goto out;
-
-    brk = min_t(msr_t, ae->ae_end, reg_end);
-    if (dir == READ) {
-      reg = brk;
-      continue;
-    }
-
-    for (; reg < brk; reg++) {
-      if (pmc_quiet) {
-	val_buf[reg - reg_begin] &= ae->ae_wr_mask;
-      } else if (val_buf[reg - reg_begin] & ~ae->ae_wr_mask) {
-	err = -EINVAL;
-	goto out;
-      }
-    }
-  }
-
- out:
-  if (err == 0 && reg < reg_begin)
-    err = -EPERM;
-
-  if (err != 0)
-    reg = reg_begin;
-
-  ci->ci_nr_vals = reg - reg_begin;
-
-  return err;
-}
-
 #define AP(b,n,m) do {                                          \
     err = pmc_access_policy_add(ap, (b), (b) + (n), (m));       \
     if (err)                                                    \
@@ -474,6 +400,80 @@ int pmc_access_policy_init(struct pmc_access_policy *ap, int cpu)
 	   MODULE_NAME, cpu, (int) x->x86_vendor);
 
   return 0;
+}
+
+static inline struct pmc_access_policy_entry *
+ae_next(const struct pmc_access_policy_entry *ae)
+{
+  struct rb_node *node = rb_next((struct rb_node *) &ae->ae_node);
+
+  return (node != NULL) ?
+    container_of(node, struct pmc_access_policy_entry, ae_node) :
+    NULL;
+}
+
+static ssize_t
+pmc_access_check(const struct pmc_access_policy *ap, struct pmc_cmd_info *ci)
+{
+  int dir = ci->ci_dir;
+  val_t *val_buf = ci->ci_val_buf;
+  size_t nr_vals = ci->ci_nr_vals;
+  ssize_t err = 0;
+
+  const struct rb_node *node = ap->ap_root.rb_node;
+  const struct pmc_access_policy_entry *lb = NULL, *ae;
+  msr_t reg_begin, reg_end, reg, brk;
+
+  if (nr_vals == 0)
+    return 0;
+
+  reg = reg_begin = ci->ci_reg;
+  reg_end = reg_begin + nr_vals;
+
+  while (node != NULL) {
+    ae = container_of(node, const struct pmc_access_policy_entry, ae_node);
+
+    if (ae->ae_begin <= reg_begin)
+      lb = ae;
+
+    if (ae->ae_begin < reg_begin)
+      node = node->rb_right;
+    else if (ae->ae_begin > reg_begin)
+      node = node->rb_left;
+    else
+      break;
+  }
+
+  for (ae = lb; reg < reg_end && ae != NULL; ae = ae_next(ae)) {
+    if (reg < ae->ae_begin)
+      goto out;
+
+    brk = min_t(msr_t, ae->ae_end, reg_end);
+    if (dir == READ) {
+      reg = brk;
+      continue;
+    }
+
+    for (; reg < brk; reg++) {
+      if (pmc_quiet) {
+	val_buf[reg - reg_begin] &= ae->ae_wr_mask;
+      } else if (val_buf[reg - reg_begin] & ~ae->ae_wr_mask) {
+	err = -EINVAL;
+	goto out;
+      }
+    }
+  }
+
+ out:
+  if (err == 0 && reg < reg_end)
+    err = -EPERM;
+
+  if (err != 0)
+    reg = reg_begin;
+
+  ci->ci_nr_vals = reg - reg_begin;
+
+  return err;
 }
 
 /* File operations. */
