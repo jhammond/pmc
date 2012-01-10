@@ -59,7 +59,7 @@ struct pmc_device {
 };
 
 static int pmc_quiet = 0;
-module_param_names(quiet, pmc_quiet, bool, 0644);
+module_param_named(quiet, pmc_quiet, bool, 0644);
 MODULE_PARM_DESC(quiet, "quietly mask out disallowed bits on write");
 
 static unsigned int pmc_major;
@@ -181,7 +181,7 @@ ae_next(const struct pmc_access_policy_entry *ae)
   struct rb_node *node = rb_next((struct rb_node *) &ae->ae_node);
 
   return (node != NULL) ?
-    container_of(node, const struct pmc_access_policy_entry, ae_node) :
+    container_of(node, struct pmc_access_policy_entry, ae_node) :
     NULL;
 }
 
@@ -189,8 +189,8 @@ static ssize_t
 pmc_access_check(const struct pmc_access_policy *ap, struct pmc_cmd_info *ci)
 {
   int dir = ci->ci_dir;
+  val_t *val_buf = ci->ci_val_buf;
   size_t nr_vals = ci->ci_nr_vals;
-  const val_t *val_buf = ci->ci_val_buf;
   ssize_t err = 0;
 
   const struct rb_node *node = ap->ap_root.rb_node;
@@ -271,7 +271,7 @@ int amd_access_policy_init(struct pmc_access_policy *ap, int cpu, struct cpuinfo
 #define AMD_PERF_CTR0 0xC0010004
 
   AP(AMD_PERF_CTL0, nr_ctrs, AMD_PERF_CTL_BITS);
-  AP(AMD_PEFR_CTR0, nr_ctrs, -1);
+  AP(AMD_PERF_CTR0, nr_ctrs, -1);
 
   /* For the Opteron Interlagos systems (and later?), there are six
      performance monitor control MSRs for each core
