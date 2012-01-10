@@ -10,7 +10,6 @@
 #include <getopt.h>
 #include <sys/mman.h>
 #include <sys/types.h>
-#include <sys/syscall.h>   /* For SYS_xxx definitions */
 
 #define READ 0
 #define WRITE 1
@@ -30,19 +29,35 @@
 #define TRACE(fmt, args...) ((void) 0)
 #endif
 
-static inline int getcpu(void)
+static int lastcpu(void) /* Don't have sched_getcpu(). */
 {
-#ifdef SYS_getcpu
-  unsigned int cpu;
-  int rc = syscall(SYS_getcpu, &cpu, NULL, NULL);
+  int cpu = -1;
+  const char *path = "/proc/self/stat";
 
-  TRACE("rc %d, errno %d\n", rc, errno);
+  FILE *file = fopen(path, "r");
+  if (file == NULL) {
+    ERROR("cannot open `%s': %m\n", path);
+    goto out;
+  }
 
-  return rc < 0 ? rc : cpu;
-#else
-  errno = -ENOSYS;
-  return -1;
-#endif
+  if (fscanf(file,
+	     "%*d %*s %*c "
+	     "%*d %*d %*d %*d %*d %*d %*d %*d %*d %*d "
+	     "%*d %*d %*d %*d %*d %*d %*d %*d %*d %*d "
+	     "%*d %*d %*d %*d %*d %*d %*d %*d %*d %*d "
+	     "%*d %*d %*d %*d %*d %*d %d", &cpu) != 1)
+    cpu = -1;
+
+ out:
+  if (file != NULL)
+    fclose(file);
+
+  TRACE("cpu %d\n", cpu);
+
+  if (cpu < 0)
+    errno = ENOENT;
+
+  return cpu;
 }
 
 typedef uint32_t msr_t;
@@ -290,10 +305,10 @@ int main(int argc, char* argv[])
 
   if (path == NULL) {
     if (cpu < 0)
-      cpu = getcpu();
+      cpu = lastcpu();
 
     if (cpu < 0)
-      FATAL("cannot get current cpu: %m\n");
+      FATAL("cannot get cpu: %m\n");
 
     snprintf(path_buf, sizeof(path_buf), "/dev/pmc%d", cpu);
     path = path_buf;
