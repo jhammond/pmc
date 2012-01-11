@@ -1,0 +1,5 @@
+pmc
+
+A linux kernel module, udev-rule, and user space utility to allow safe
+but unabstracted access to the performance monitoring MSRs on some AMD
+and Intel processors.
