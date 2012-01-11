@@ -29,6 +29,19 @@
 #define MODULE_NAME "pmc"
 #define PMC_DEVICE_NAME "pmc"
 
+static int pmc_quiet = 0;
+module_param_named(quiet, pmc_quiet, bool, 0644);
+MODULE_PARM_DESC(quiet, "quietly mask out reserved/disallowed bits on write");
+
+static int pmc_debug = 0;
+module_param_named(debug, pmc_debug, bool, 0644);
+MODULE_PARM_DESC(debug, "enable debugging");
+
+#define TRACE(fmt,args...) do {                         \
+    if (pmc_debug)                                      \
+      printk(KERN_DEBUG"%s: "fmt, MODULE_NAME, ##args); \
+  } while (0)
+
 typedef u32 msr_t;
 typedef u64 val_t;
 #define NR_VALS_PER_BUF (PAGE_SIZE / sizeof(val_t))
@@ -55,10 +68,6 @@ struct pmc_device {
   struct cdev d_cdev;
   struct pmc_access_policy d_access_policy;
 };
-
-static int pmc_quiet = 0;
-module_param_named(quiet, pmc_quiet, bool, 0644);
-MODULE_PARM_DESC(quiet, "quietly mask out reserved/disallowed bits on write");
 
 static unsigned int pmc_major;
 static struct class *pmc_class;
@@ -173,10 +182,11 @@ static int pmc_access_policy_add(struct pmc_access_policy *ap,
   return 0;
 }
 
-#define AP(b,n,m) do {                                          \
-    err = pmc_access_policy_add(ap, (b), (b) + (n), (m));       \
-    if (err)                                                    \
-      goto out;                                                 \
+#define AP(b,n,m) do {                                                  \
+    TRACE("cpu %d, adding range %u %u %llu\n", cpu, (b), (n), (m));     \
+    err = pmc_access_policy_add(ap, (b), (b) + (n), (m));               \
+    if (err)                                                            \
+      goto out;                                                         \
   } while (0)
 
 int amd_access_policy_init(struct pmc_access_policy *ap, int cpu, struct cpuinfo_x86 *x)
@@ -523,6 +533,9 @@ pmc_rw(struct file *file, int dir, char __user *buf, size_t count, loff_t *pos)
     if (err)
       break;
 
+    TRACE("cpu %d, dir %d, reg %u, nr_vals %zu\n",
+          cpu, dir, ci.ci_reg, ci.nr_vals);
+
     err = smp_call_function_single(cpu, &pmc_cmd_func, &ci, 1, 1);
     if (err)
       break;
@@ -713,8 +726,11 @@ static int __init pmc_init(void)
 
   for_each_online_cpu(cpu) {
     err = pmc_device_create(pmc_class, pmc_major, cpu);
-    if (err != 0)
+    if (err != 0) {
+      printk(KERN_ERR "%s: cannot create device for cpu %d, err %d\n",
+             MODULE_NAME, cpu, err);
       goto fail;
+    }
   }
 
   register_hotcpu_notifier(&pmc_class_cpu_notifier);
