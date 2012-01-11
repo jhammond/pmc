@@ -1,6 +1,5 @@
 obj-m += pmc.o
 
-CFLAGS = -Wall
 UNAME = $(shell uname -r)
 BUILD = /lib/modules/$(UNAME)/build
 

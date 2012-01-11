@@ -6,7 +6,7 @@
  * This device is accessed by lseek() to the appropriate register number
  * and then read/write in chunks of 8 bytes.
  *
- * This driver uses /dev/cpu/%d/pmc where %d is the minor number, and on
+ * This driver uses /dev/pmc%d where %d is the minor number, and on
  * an SMP box will direct the access to CPU %d.
  */
 #include <linux/module.h>
@@ -61,7 +61,7 @@ struct pmc_device {
 
 static int pmc_quiet = 0;
 module_param_named(quiet, pmc_quiet, bool, 0644);
-MODULE_PARM_DESC(quiet, "quietly mask out disallowed bits on write");
+MODULE_PARM_DESC(quiet, "quietly mask out reserved/disallowed bits on write");
 
 static unsigned int pmc_major;
 static struct class *pmc_class;
@@ -186,6 +186,7 @@ int amd_access_policy_init(struct pmc_access_policy *ap, int cpu, struct cpuinfo
 {
   int err = 0;
   unsigned int nr_ctrs = 0, nr_ext_ctrs = 0, nr_nb_ctrs = 0;
+  u32 eax, ebx, ecx, edx;
   unsigned int i;
 
   /* TODO What is the CPUID for the 10h counters? */
@@ -213,19 +214,28 @@ int amd_access_policy_init(struct pmc_access_policy *ap, int cpu, struct cpuinfo
      It looks like we should use the same mask on the user's request
      as on the earlier Opterons.
 
-     Support for the core performance counters PerfCtr4-5 is indicated
-     by CPUID Fn8000_0001_ECX[PerfCtrExtCore] = 1.
+     From the 15h BKDG:
 
-     CPUID Fn8000_0001_ECX[PerfCtrExtNB] = 1 indicates support for the
-     four architecturally defined northbridge performance counters.
+     CPUID Fn8000_0001_ECX[23] PerfCtrExtCore: core performance
+     counter extensions support. Value: 1. Indicates support for
+     MSRC001_020[A,8,6,4,2,0] and MSRC001_020[B,9,7,5,3,1].
 
-     TODO Bits PerfCtrExtCore and PerfCtrExtNB are not in my copy of
-     the CPUID manual. */
+     CPUID Fn8000_0001_ECX[24] PerfCtrExtNB: NB performance counter
+     extensions support. Value: 1. Indicates support for
+     MSRC001_024[6,4,2,0] and MSRC001_024[7,5,3,1]. */
 
-  if (x->x86 == 0x15) { /* ??? */
+  if (x->x86 < 0x15)
+    goto out;
+
+  err = smp_cpuid(cpu, 0x80000001, &eax, &ebx, &ecx, &edx);
+  if (err)
+    goto out;
+
+  if (ecx & (1U << 23))
     nr_ext_ctrs = 6;
+
+  if (ecx & (1U << 24))
     nr_nb_ctrs = 4;
-  }
 
   for (i = 0; i < nr_ext_ctrs; i++) {
     AP(AMD_EXT_PERF_CTL0 + 2 * i, 1, AMD_PERF_CTL_BITS);
@@ -347,7 +357,7 @@ intel_access_policy_init(struct pmc_access_policy *ap, int cpu, struct cpuinfo_x
   AP(MSR_UNCORE_PERF_GLOBAL_STATUS, 1, 0x8000000000000000); /* CHG */
   AP(MSR_UNCORE_PERF_GLOBAL_OVF_CTRL, 1, 0x80000001000000FF); /* CLR_OVF_{PC{0..7},_FC0,_CHG} */
   AP(MSR_UNCORE_FIXED_CTR_CTRL, 1, 0x1); /* EN */
-  AP(MSR_UNCORE_PMC0, nr_uncore_ctrs, (1UL << uncore_ctr_width) - 1); 
+  AP(MSR_UNCORE_PMC0, nr_uncore_ctrs, (1UL << uncore_ctr_width) - 1);
   AP(MSR_UNCORE_PERFEVTSEL0, nr_uncore_ctrs, 0x00000000FFC6FFFF);
 
  out:
@@ -662,8 +672,7 @@ static int pmc_class_cpu_callback(struct notifier_block *nb,
   return NOTIFY_OK;
 }
 
-static struct notifier_block __cpuinitdata pmc_class_cpu_notifier =
-{
+static struct notifier_block __cpuinitdata pmc_class_cpu_notifier = {
   .notifier_call = pmc_class_cpu_callback,
 };
 #endif
