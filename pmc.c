@@ -189,10 +189,10 @@ int amd_access_policy_init(struct pmc_access_policy *ap, int cpu, struct cpuinfo
   u32 eax, ebx, ecx, edx;
   unsigned int i;
 
-  /* TODO What is the CPUID for the 10h counters? */
+  if (x->x86 < 0x10)
+    goto out;
 
-  if (x->x86 >= 0x10) /* XXX? */
-    nr_ctrs = 4;
+  nr_ctrs = 4;
 
 #define AMD_PERF_CTL_BITS 0x00000000FFCFFFFF
 
@@ -569,7 +569,7 @@ static int pmc_open(struct inode *inode, struct file *file)
   val_t *val_buf = NULL;
 
   if (cpu >= NR_CPUS || !cpu_online(cpu))
-    return -ENXIO; /* No such CPU. */
+    return -ENXIO;
 
   if (per_cpu(pmc_device_vec, cpu) == NULL)
     return -ENXIO;
@@ -580,8 +580,6 @@ static int pmc_open(struct inode *inode, struct file *file)
 
   file->private_data = val_buf;
 
-  /* XXX AMD and Intel or just AMD? */
-  /* Enable rdpmc on cpu. */
   smp_call_function_single(cpu, &enable_cr4_pce, NULL, 1, 1);
 
   return 0;
