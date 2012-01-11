@@ -5,9 +5,6 @@
  *
  * This device is accessed by lseek() to the appropriate register number
  * and then read/write in chunks of 8 bytes.
- *
- * This driver uses /dev/pmc%d where %d is the minor number, and on
- * an SMP box will direct the access to CPU %d.
  */
 #include <linux/module.h>
 #include <linux/types.h>

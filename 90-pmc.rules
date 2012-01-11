@@ -1,1 +1,1 @@
-KERNEL=="pmc*", NAME="%k", OWNER="root", GROUP="root", MODE="0666"
+KERNEL=="pmc[0-9]*", NAME="cpu/%n/pmc", MODE="0666"

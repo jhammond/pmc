@@ -373,7 +373,7 @@ int main(int argc, char* argv[])
     if (cpu < 0)
       FATAL("cannot get cpu: %m\n");
 
-    snprintf(path_buf, sizeof(path_buf), "/dev/pmc%d", cpu);
+    snprintf(path_buf, sizeof(path_buf), "/dev/cpu/%d/pmc", cpu);
     path = path_buf;
   }
 
