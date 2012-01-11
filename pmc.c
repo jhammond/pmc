@@ -44,6 +44,7 @@ MODULE_PARM_DESC(debug, "enable debugging");
 
 typedef u32 msr_t;
 typedef u64 val_t;
+#define PRI_MSR "0x%08X"
 #define NR_VALS_PER_BUF (PAGE_SIZE / sizeof(val_t))
 
 struct pmc_access_policy_entry {
@@ -183,9 +184,10 @@ static int pmc_access_policy_add(struct pmc_access_policy *ap,
 }
 
 #define AP(b,n,m) do {                                                  \
-    mst_t _b = (b), _e = (b) + (n);                                     \
+    msr_t _b = (b), _e = (b) + (n);                                     \
     val_t _m = (m);                                                     \
-    TRACE("cpu %d, adding range %u %u %llu\n", cpu, _b, _e, _m);        \
+    TRACE("cpu %d, adding range "PRI_MSR" "PRI_MSR" 0x%016llx\n",	\
+	  cpu, _b, _e, _m);						\
     err = pmc_access_policy_add(ap, _b, _e, _m);                        \
     if (err)                                                            \
       goto out;                                                         \
@@ -535,8 +537,8 @@ pmc_rw(struct file *file, int dir, char __user *buf, size_t count, loff_t *pos)
     if (err)
       break;
 
-    TRACE("cpu %d, dir %d, reg %u, nr_vals %zu\n",
-          cpu, dir, ci.ci_reg, ci.nr_vals);
+    TRACE("cpu %d, dir %d, reg "PRI_MSR", nr_vals %zu\n",
+          cpu, dir, ci.ci_reg, ci.ci_nr_vals);
 
     err = smp_call_function_single(cpu, &pmc_cmd_func, &ci, 1, 1);
     if (err)
