@@ -183,8 +183,10 @@ static int pmc_access_policy_add(struct pmc_access_policy *ap,
 }
 
 #define AP(b,n,m) do {                                                  \
-    TRACE("cpu %d, adding range %u %u %llu\n", cpu, (b), (n), (m));     \
-    err = pmc_access_policy_add(ap, (b), (b) + (n), (m));               \
+    mst_t _b = (b), _e = (b) + (n);                                     \
+    val_t _m = (m);                                                     \
+    TRACE("cpu %d, adding range %u %u %llu\n", cpu, _b, _e, _m);        \
+    err = pmc_access_policy_add(ap, _b, _e, _m);                        \
     if (err)                                                            \
       goto out;                                                         \
   } while (0)
