@@ -73,7 +73,9 @@ const struct msr_table_ent {
   const char *m_name;
   msr_t m_msr;
 } msr_table[] = {
-#include "msr_table.def"
+#define X(m) { #m, m }
+#include "msrs.x"
+#undef X
 };
 
 int msr_search_cmp(const void *v_key, const void *v_ent)

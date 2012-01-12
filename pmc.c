@@ -283,6 +283,7 @@ intel_access_policy_init(struct pmc_access_policy *ap, int cpu, struct cpuinfo_x
 {
   int err, ver;
   unsigned int i, nr_ctrs, nr_fixed_ctrs, fixed_ctr_width;
+  unsigned int nr_offcore_rsp;
   unsigned int nr_uncore_ctrs, uncore_ctr_width;
   val_t fixed_ctr_ctrl_bits, global_bits;
   u32 eax, ebx, ecx, edx;
@@ -349,27 +350,35 @@ intel_access_policy_init(struct pmc_access_policy *ap, int cpu, struct cpuinfo_x
   switch (x->x86_model) {
   default:
     goto out;
-  case 0x1A:
-  case 0x1E:
-  case 0x1F:
-  case 0x2C: /* CHECKME. */
-    nr_uncore_ctrs = 8;
-    uncore_ctr_width = 48;
+  case 0x1A: /* Nehalem EP */
+  case 0x1E: /* Nehalem EP */
+  case 0x1F: /* Nehalem EP */
+  case 0x2E: /* Nehalem EX, Xeon 7500 */
+    nr_offcore_rsp = 1;
+    break;
+  case 0x25: /* Westmere EP, Xeon [EX]56?? */
+  case 0x2C: /* Westmere EP, Xeon [EX]56?? */
+  case 0x2A: /* Sandy Bridge, Core ?, equiv to Westmere EP for PMC. */
+  case 0x2D: /* Sandy Bridge, Xeon ?, equiv to Westmere EP for PMC. */
+  case 0x2F: /* Westmere EX, Xeon E7 */
+    nr_offcore_rsp = 2;
     break;
   }
 
-  /* Stupid intel keeps changing the section numbers of 3B.  See the
-     section called "Uncore Performance Monitoring Management
-     Facility." */
+  /* Offcore response registers start at 0x186 and are contiguous. */
+  AP(IA32_OFFCORE_RSP0, nr_offcore_rsp, 0xF7FF); /* 0:10, 12:15. */
 
   /* Uncore PMCs start at 0x3B0 and are contiguous. */
+  nr_uncore_ctrs = 8;
+  uncore_ctr_width = 48;
 
-  AP(MSR_UNCORE_PERF_GLOBAL_CTRL, 1, 0x00000001000000FF); /* EN_PC{0..7}, EN_FC0 */
-  AP(MSR_UNCORE_PERF_GLOBAL_STATUS, 1, 0x8000000000000000); /* CHG */
-  AP(MSR_UNCORE_PERF_GLOBAL_OVF_CTRL, 1, 0x80000001000000FF); /* CLR_OVF_{PC{0..7},_FC0,_CHG} */
-  AP(MSR_UNCORE_FIXED_CTR_CTRL, 1, 0x1); /* EN */
-  AP(MSR_UNCORE_PMC0, nr_uncore_ctrs, (1UL << uncore_ctr_width) - 1);
-  AP(MSR_UNCORE_PERFEVTSEL0, nr_uncore_ctrs, 0x00000000FFC6FFFF);
+  AP(IA32_UNCORE_PERF_GLOBAL_CTRL, 1, 0x00000001000000FF); /* EN_PC{0..7}, EN_FC0 */
+  AP(IA32_UNCORE_PERF_GLOBAL_STATUS, 1, 0x8000000000000000); /* CHG */
+  AP(IA32_UNCORE_PERF_GLOBAL_OVF_CTRL, 1, 0x80000001000000FF); /* CLR_OVF_{PC{0..7},_FC0,_CHG} */
+  AP(IA32_UNCORE_FIXED_CTR_CTRL, 1, 0x1); /* EN */
+  AP(IA32_UNCORE_PMC0, nr_uncore_ctrs, (1UL << uncore_ctr_width) - 1);
+  AP(IA32_UNCORE_PERFEVTSEL0, nr_uncore_ctrs, 0x00000000FFC6FFFF);
+  AP(IA32_UNCORE_ADDR_OPCODE_MATCH, 1, 0xE000FFFFFFFFFFF8); /* 3:39, 40:47, 61:63 */
 
  out:
   return 0;
