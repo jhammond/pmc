@@ -88,7 +88,7 @@ static inline int
 smp_cpuid(int cpu, int reg, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx)
 {
   struct smp_cpuid_info ci = { .reg = reg };
-  int err = smp_call_function_single(cpu, &smp_cpuid_func, &ci, 1, 1);
+  int err = smp_call_function_single(cpu, &smp_cpuid_func, &ci, 1);
   if (err)
     return err;
 
@@ -393,7 +393,7 @@ int pmc_access_policy_init(struct pmc_access_policy *ap, int cpu)
   if (cpu >= NR_CPUS || !cpu_online(cpu))
     return -ENXIO;
 
-  x = &(cpu_data)[cpu];
+  x = &cpu_data(cpu);
   if (!cpu_has(x, X86_FEATURE_MSR))
     return 0; /* MSR not supported. */
 
@@ -549,7 +549,7 @@ pmc_rw(struct file *file, int dir, char __user *buf, size_t count, loff_t *pos)
     TRACE("cpu %d, dir %d, reg "PRI_MSR", nr_vals %zu\n",
           cpu, dir, ci.ci_reg, ci.ci_nr_vals);
 
-    err = smp_call_function_single(cpu, &pmc_cmd_func, &ci, 1, 1);
+    err = smp_call_function_single(cpu, &pmc_cmd_func, &ci, 1);
     if (err)
       break;
 
@@ -691,7 +691,7 @@ static int pmc_class_cpu_callback(struct notifier_block *nb,
   return NOTIFY_OK;
 }
 
-static struct notifier_block __cpuinitdata pmc_class_cpu_notifier = {
+static struct notifier_block /* __cpuinitdata */ pmc_class_cpu_notifier = {
   .notifier_call = pmc_class_cpu_callback,
 };
 #endif
@@ -743,7 +743,7 @@ static int __init pmc_init(void)
       continue;
     }
 
-    smp_call_function_single(cpu, &enable_cr4_pce, NULL, 1, 1);
+    smp_call_function_single(cpu, &enable_cr4_pce, NULL, 1);
   }
 
   register_hotcpu_notifier(&pmc_class_cpu_notifier);
