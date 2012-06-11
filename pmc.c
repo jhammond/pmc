@@ -603,8 +603,6 @@ static int pmc_open(struct inode *inode, struct file *file)
 
   file->private_data = val_buf;
 
-  smp_call_function_single(cpu, &enable_cr4_pce, NULL, 1, 1);
-
   return 0;
 }
 
@@ -742,8 +740,10 @@ static int __init pmc_init(void)
     if (err != 0) {
       printk(KERN_ERR "%s: cannot create device for cpu %d, err %d\n",
              MODULE_NAME, cpu, err);
-      goto fail;
+      continue;
     }
+
+    smp_call_function_single(cpu, &enable_cr4_pce, NULL, 1, 1);
   }
 
   register_hotcpu_notifier(&pmc_class_cpu_notifier);
